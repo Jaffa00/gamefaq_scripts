@@ -147,7 +147,6 @@ do
     if [ "$game" = "" ] || [[ $line =~ $game ]] ; then
         $LIVE && rm -f $WD/game.html && wget -O $WD/game.html "$line"
         sleep $WAIT_TIME
-        #cat $WD/game.html | grep "<li data-platform=" | sed -n '/<div class/q;p' | awk '{$1=$1};1' | cut -c15- | sed 's/..$//' | awk '$0="'$HOST'"$0' >> $FAQ_LINKS
         cat $WD/game.html | sed -n '/<ol class="list flex col1 stripe guides gf_guides">/,/<\/ol>/p' | grep -Eoi '<a [^>]+>' | grep '/faqs/' | grep -Eo 'href="[^\"]+"'| cut -c 7- | sed 's/.\{1\}$//' | awk '$0="'$HOST'"$0' >> $FAQ_LINKS
        $VERBOSE && echo "Parsed FAQ links from $line: " $(cat $FAQ_LINKS | wc -l) "(" $(tail -1 $FAQ_LINKS) ")" 
        if [[ $line =~ $game ]] then break
