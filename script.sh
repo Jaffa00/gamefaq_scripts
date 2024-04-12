@@ -49,6 +49,7 @@ WAIT_TIME=5  # Number of seconds to wait after each HTTP request
 LIVE=true    # false will prevent live http calls
 CLEANUP=true # false will prevent cleanup of temporary files
 VERBOSE=true # true will display useful debug output
+LOCALGAMES=true # true will use existing game list, if there is one
 
 WD=".work"         ; mkdir -p $WD         # keep temporary files tidy in a Working Directory
 OUTPUT_DIR="output"; mkdir -p $OUTPUT_DIR # keep output files in one place
@@ -83,47 +84,74 @@ echo "Working..."
 
 $VERBOSE && echo "System: $system"
 
-# Fetch first page of games
-$LIVE && rm -f $WD/games0.html && wget -O $WD/games0.html $HOST/"$system"/category/999-all
-sleep $WAIT_TIME
-
-# Extract number of pages of games
-maxpage=$(cat $WD/games0.html | grep ' of [[:digit:]]\+</li>' | sed 's/.*\([[:digit:]]\+\).\+/\1/')
-if [[ -z "$maxpage" ]]; then maxpage=0; fi
-$VERBOSE && echo "Number of pages: $maxpage"
-
-# Extract game links from first page
-mv $GAME_LINKS $WD/$GAME_LINKS.old
-cat $WD/games0.html | grep "/$system/" | grep "Guides" | grep "<td class=" | awk '{$1=$1};1' | cut -c28- | sed 's/faqs.*/faqs/' | awk '$0="'$HOST'"$0' >> $GAME_LINKS
-$VERBOSE && echo "Parsed game links from page 0: " $(cat $GAME_LINKS | wc -l) "(" $(tail -1 $GAME_LINKS) ")"
-
-# If there is more than one page
-if [[ "$maxpage" > 0 ]]
-then
-    # Loop over all the other pages, collecting all game links
-    for (( i=1; i<="$maxpage"; i++ ))
-    do
-        $LIVE && rm -f $WD/games"$i".html && wget -O $WD/games"$i".html $HOST/"$system"/category/999-all?page="$i"
-        sleep $WAIT_TIME
-        cat $WD/games"$i".html | grep "/$system/" | grep "Guides" | grep "<td class=" | awk '{$1=$1};1' | cut -c28- | sed 's/faqs.*/faqs/' | awk '$0="'$HOST'"$0' >> $GAME_LINKS
-        $VERBOSE && echo "Parsed game links from page $i: " $(cat $GAME_LINKS | wc -l) "(" $(tail -1 $GAME_LINKS) ")"
-    done
+if [[ -e "$WD/games0.html" ]] && $LOCALGAMES
+then 
+    echo "USing local games list."
 else
-    $VERBOSE && echo "There are no more pages"
+    # Fetch first page of games
+    $LIVE && rm -f $WD/games0.html && wget -O $WD/games0.html $HOST/"$system"/category/999-all
+    sleep $WAIT_TIME
+
+    # Extract number of pages of games
+    maxpage=$(cat $WD/games0.html | grep ' of [[:digit:]]\+</li>' | grep -Eoi '[[:digit:]]+')
+    if [[ -z "$maxpage" ]]; then maxpage=0; fi
+    $VERBOSE && echo "Number of pages: $maxpage"
+
+    # Extract game links from first page
+    if [[ -e $GAME_LINKS ]]; then mv $GAME_LINKS $WD/$GAME_LINKS.old; fi
+    cat $WD/games0.html | grep "/$system/" | grep "Guides" | grep "<td class=" | awk '{$1=$1};1' | cut -c28- | sed 's/faqs.*/faqs/' | awk '$0="'$HOST'"$0' >> $GAME_LINKS
+    $VERBOSE && echo "Parsed game links from page 0: " $(cat $GAME_LINKS | wc -l) "(" $(tail -1 $GAME_LINKS) ")"
+
+    # If there is more than one page
+    if [[ "$maxpage" > 0 ]]
+    then
+        # Loop over all the other pages, collecting all game links
+        for (( i=1; i<="$maxpage"; i++ ))
+        do
+            $LIVE && rm -f $WD/games"$i".html && wget -O $WD/games"$i".html $HOST/"$system"/category/999-all?page="$i"
+            sleep $WAIT_TIME
+            cat $WD/games"$i".html | grep "/$system/" | grep "Guides" | grep "<td class=" | awk '{$1=$1};1' | cut -c28- | sed 's/faqs.*/faqs/' | awk '$0="'$HOST'"$0' >> $GAME_LINKS
+            $VERBOSE && echo "Parsed game links from page $i: " $(cat $GAME_LINKS | wc -l) "(" $(tail -1 $GAME_LINKS) ")"
+        done
+    else
+        $VERBOSE && echo "There are no more pages"
+    fi
+
+    # Deduplicate game links
+    mv $GAME_LINKS $WD/$GAME_LINKS.raw
+    cat $WD/$GAME_LINKS.raw | sort | uniq > $GAME_LINKS
+fi
+# Check if single game or all games
+echo "Please enter the (partial) name or code of a game (blank for all games): "
+read game
+
+#account for blank
+if [[ "$game" = "" ]]; then 
+    $VERBOSE && echo "Getting all games"
+else
+    if ! grep -Fq "$game" $GAME_LINKS 
+    then
+        echo "ERROR: Invalid game '$game'"
+        echo "Not found in $$GAME_LINKS"
+        exit
+    else
+        $VERBOSE && echo "Getting '$game'"
+    fi
 fi
 
-# Deduplicate game links
-mv $GAME_LINKS $WD/$GAME_LINKS.raw
-cat $WD/$GAME_LINKS.raw | sort | uniq > $GAME_LINKS
 
 # Loop over each game, collecting all FAQs
-mv $FAQ_LINKS $WD/$FAQ_LINKS.old
+if [[ -e $FAQ_LINKS ]]; then mv $FAQ_LINKS $WD/$FAQ_LINKS.old; fi
 cat $GAME_LINKS | while read line
 do
-    $LIVE && rm -f $WD/game.html && wget -O $WD/game.html "$line"
-    sleep $WAIT_TIME
-    cat $WD/game.html | grep "<li data-url=" | sed -n '/<div class/q;p' | awk '{$1=$1};1' | cut -c15- | sed 's/..$//' | awk '$0="'$HOST'"$0' >> $FAQ_LINKS
-    $VERBOSE && echo "Parsed FAQ links from $line: " $(cat $FAQ_LINKS | wc -l) "(" $(tail -1 $FAQ_LINKS) ")" 
+    if [ "$game" = "" ] || [[ $line =~ $game ]] ; then
+        $LIVE && rm -f $WD/game.html && wget -O $WD/game.html "$line"
+        sleep $WAIT_TIME
+        #cat $WD/game.html | grep "<li data-platform=" | sed -n '/<div class/q;p' | awk '{$1=$1};1' | cut -c15- | sed 's/..$//' | awk '$0="'$HOST'"$0' >> $FAQ_LINKS
+        cat $WD/game.html | sed -n '/<ol class="list flex col1 stripe guides gf_guides">/,/<\/ol>/p' | grep -Eoi '<a [^>]+>' | grep '/faqs/' | grep -Eo 'href="[^\"]+"'| cut -c 7- | sed 's/.\{1\}$//' | awk '$0="'$HOST'"$0' >> $FAQ_LINKS
+       $VERBOSE && echo "Parsed FAQ links from $line: " $(cat $FAQ_LINKS | wc -l) "(" $(tail -1 $FAQ_LINKS) ")" 
+       if [[ $line =~ $game ]] then break
+    fi
 done
 
 # Deduplicate FAQ links
